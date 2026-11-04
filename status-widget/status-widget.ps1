@@ -302,6 +302,22 @@ try {
 } catch {}
 
 function Get-TabScreen { [Windows.Forms.Screen]::FromPoint((New-Object Drawing.Point(($script:tabX + $tabW / 2), ($script:tabY + 10)))).WorkingArea }
+# The other widget's tab (from its saved position, with an 8 px margin), so tabs and open panels keep clear of it.
+$otherPosFile = "$PSScriptRoot\..\usage-widget\position.txt"
+function Get-OtherTab {
+    try { $x, $y = (Get-Content $otherPosFile -ErrorAction Stop).Split(',') | ForEach-Object { [int]$_ }; New-Object Drawing.Rectangle($x, ($y - 8), $tabW, ($tabH + 16)) } catch { $null }
+}
+function Test-HitsOther($x, $y, $w, $h) { $o = Get-OtherTab; [bool]($o -and (New-Object Drawing.Rectangle($x, $y, $w, $h)).IntersectsWith($o)) }
+
+# Moves this tab just above or below the other one when they would touch.
+function Clear-OtherTab($area) {
+    if (-not (Test-HitsOther $script:tabX $script:tabY $tabW $tabH)) { return }
+    $o = Get-OtherTab; $above = $o.Top - $tabH; $below = $o.Bottom
+    $preferAbove = $script:tabY -lt $o.Top + 8
+    $script:tabY = if (($preferAbove -and $above -ge $area.Top) -or $below + $tabH -gt $area.Bottom) { $above } else { $below }
+    try { Set-Content $posFile "$($script:tabX),$($script:tabY)" } catch {}
+}
+Clear-OtherTab (Get-TabScreen)
 
 function Set-Expanded($open) {
     $script:expanded = $open
@@ -311,6 +327,12 @@ function Set-Expanded($open) {
     $form.Left = if ($open -and $openLeft) { $script:tabX + $tabW - $form.Width } else { $script:tabX }
     $form.Left = [Math]::Max($area.Left, [Math]::Min($area.Right - $form.Width, $form.Left))
     $form.Top = [Math]::Max($area.Top, [Math]::Min($area.Bottom - $form.Height, $script:tabY))
+    # An open panel must not cover the other tab: grow up from this tab instead, else open beside the tab column.
+    if ($open -and (Test-HitsOther $form.Left $form.Top $form.Width $form.Height)) {
+        $up = [Math]::Max($area.Top, $script:tabY + $tabH - $form.Height)
+        if (-not (Test-HitsOther $form.Left $up $form.Width $form.Height)) { $form.Top = $up }
+        else { $o = Get-OtherTab; $form.Left = if ($openLeft) { [Math]::Min($o.Left, $script:tabX) - $form.Width } else { [Math]::Max($o.Right, $script:tabX + $tabW) } }
+    }
     $form.Invalidate()
 }
 
@@ -360,6 +382,7 @@ $form.Add_MouseUp({
     $area = Get-TabScreen
     if ($script:tabX - $area.Left -lt 40) { $script:tabX = $area.Left }
     elseif ($area.Right - ($script:tabX + $tabW) -lt 40) { $script:tabX = $area.Right - $tabW }
+    Clear-OtherTab $area
     Set-Expanded $false
     $script:tabX = $form.Left; $script:tabY = $form.Top
     try { Set-Content $posFile "$($script:tabX),$($script:tabY)" } catch {}

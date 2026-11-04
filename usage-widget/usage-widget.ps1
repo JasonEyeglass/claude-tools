@@ -7,6 +7,8 @@ Add-Type -Namespace Win32 -Name User32 -MemberDefinition @'
 '@
 
 $credFile   = "$env:USERPROFILE\.claude\.credentials.json"
+# Optional second Claude Code profile signed in to the Desktop account (CLAUDE_CONFIG_DIR=~/.claude-desktop-acct).
+$desktopCredFile = "$env:USERPROFILE\.claude-desktop-acct\.credentials.json"
 $sourceFile = Join-Path $PSScriptRoot 'source.txt'
 $pollMs     = 120000
 $panelW     = 280
@@ -17,9 +19,9 @@ if ($script:source -notin 'code', 'desktop') { $script:source = 'code' }
 
 # ---------- data ----------
 
-function Get-Usage {
+function Get-Usage($file = $credFile) {
     # shortcut: uses the token Claude Code keeps refreshed; never refreshes it itself, so after long idle it waits for Claude Code to run once.
-    $token = (Get-Content $credFile -Raw | ConvertFrom-Json).claudeAiOauth.accessToken
+    $token = (Get-Content $file -Raw | ConvertFrom-Json).claudeAiOauth.accessToken
     Invoke-RestMethod -Uri 'https://api.anthropic.com/api/oauth/usage' -TimeoutSec 15 `
         -Headers @{ Authorization = "Bearer $token"; 'anthropic-beta' = 'oauth-2025-04-20' }
 }
@@ -27,6 +29,8 @@ function Get-Usage {
 # Returns @{ limits; asOf }. Desktop's login is encrypted, so read the usage samples Desktop saves itself instead.
 function Get-Limits {
     if ($script:source -eq 'code') { return @{ limits = @((Get-Usage).limits); asOf = Get-Date } }
+    # Live numbers and resets when the Desktop-account profile's login works; otherwise Desktop's own saved samples.
+    if (Test-Path $desktopCredFile) { try { return @{ limits = @((Get-Usage $desktopCredFile).limits); asOf = Get-Date; live = $true } } catch {} }
     # shortcut: Desktop samples only have 5-hour and weekly % (no reset times, no Fable) and update only while Desktop runs.
     $file = Get-ChildItem "$env:LOCALAPPDATA\Claude-Data\claude_*\plan-usage-history.json", "$env:APPDATA\Claude\plan-usage-history.json" -ErrorAction SilentlyContinue | Select-Object -First 1
     if (-not $file) { throw 'Claude Desktop usage file not found' }
@@ -49,10 +53,13 @@ function Get-Label($limit) {
 
 function Format-Reset($iso) {
     if (-not $iso) { return '' }
-    $left = [DateTimeOffset]::Parse($iso) - [DateTimeOffset]::Now
+    $at = [DateTimeOffset]::Parse($iso).LocalDateTime
+    $left = $at - (Get-Date)
     if ($left.TotalMinutes -le 0) { return 'Resetting' }
-    if ($left.TotalDays -ge 1) { return 'Resets in {0}d {1}h' -f [int][Math]::Floor($left.TotalDays), $left.Hours }
-    'Resets in {0}h {1}m' -f [int][Math]::Floor($left.TotalHours), $left.Minutes
+    # Clock time of the reset (weekday added when it isn't today), then the countdown.
+    $when = if ($at.Date -eq (Get-Date).Date) { $at.ToString('h:mm tt') } else { $at.ToString('ddd h:mm tt') }
+    $in = if ($left.TotalDays -ge 1) { '{0}d {1}h' -f [int][Math]::Floor($left.TotalDays), $left.Hours } else { '{0}h {1}m' -f [int][Math]::Floor($left.TotalHours), $left.Minutes }
+    "Resets $when  $([char]0xB7)  in $in"
 }
 
 # ---------- look ----------
@@ -127,9 +134,14 @@ function Draw-Panel($g) {
     }
     $a = $script:data.asOf
     $stamp = if ($a.Date -eq (Get-Date).Date) { $a.ToString('h:mm tt') } else { $a.ToString('MMM d, h:mm tt') }
-    $foot = if ($script:source -eq 'code') { "Updated $stamp" } else { "As of $stamp - saved by Desktop" }
+    $live = $script:source -eq 'code' -or $script:data.live
+    $foot = if ($live) { "Updated $stamp" } else { "As of $stamp - saved by Desktop" }
+    # Desktop only saves usage now and then, so flag numbers over 30 min old instead of passing them off as current.
+    $age = (Get-Date) - $a
+    $old = -not $live -and $age.TotalMinutes -gt 30
+    if ($old) { $foot = "As of $stamp ($(if ($age.TotalHours -ge 1) { '{0}h' -f [int][Math]::Floor($age.TotalHours) } else { '{0}m' -f [int]$age.TotalMinutes }) old) - may be out of date" }
     $pen = New-Object Drawing.Pen $c.track; $g.DrawLine($pen, $pad, $y, $panelW - $pad, $y); $pen.Dispose()
-    Draw-Text $g $foot $f.small $c.dim $pad ($y + 7)
+    Draw-Text $g $foot $f.small $(if ($old) { $c.warn } else { $c.dim }) $pad ($y + 7)
 }
 
 function Get-SessionPct {
@@ -197,8 +209,25 @@ try {
 } catch {}
 
 function Get-TabScreen { [Windows.Forms.Screen]::FromPoint((New-Object Drawing.Point(($script:tabX + $tabW / 2), ($script:tabY + 10)))).WorkingArea }
+# The other widget's tab (from its saved position, with an 8 px margin), so tabs and open panels keep clear of it.
+$otherPosFile = "$PSScriptRoot\..\status-widget\position.txt"
+function Get-OtherTab {
+    try { $x, $y = (Get-Content $otherPosFile -ErrorAction Stop).Split(',') | ForEach-Object { [int]$_ }; New-Object Drawing.Rectangle($x, ($y - 8), $tabW, ($tabH + 16)) } catch { $null }
+}
+function Test-HitsOther($x, $y, $w, $h) { $o = Get-OtherTab; [bool]($o -and (New-Object Drawing.Rectangle($x, $y, $w, $h)).IntersectsWith($o)) }
+
+# Moves this tab just above or below the other one when they would touch.
+function Clear-OtherTab($area) {
+    if (-not (Test-HitsOther $script:tabX $script:tabY $tabW $tabH)) { return }
+    $o = Get-OtherTab; $above = $o.Top - $tabH; $below = $o.Bottom
+    $preferAbove = $script:tabY -lt $o.Top + 8
+    $script:tabY = if (($preferAbove -and $above -ge $area.Top) -or $below + $tabH -gt $area.Bottom) { $above } else { $below }
+    try { Set-Content $posFile "$($script:tabX),$($script:tabY)" } catch {}
+}
+Clear-OtherTab (Get-TabScreen)
 
 function Set-Expanded($open) {
+    $opening = $open -and -not $script:expanded
     $script:expanded = $open
     $area = Get-TabScreen
     $form.Size = if ($open) { New-Object Drawing.Size($panelW, (Get-PanelHeight)) } else { New-Object Drawing.Size($tabW, $tabH) }
@@ -206,7 +235,15 @@ function Set-Expanded($open) {
     $form.Left = if ($open -and $openLeft) { $script:tabX + $tabW - $form.Width } else { $script:tabX }
     $form.Left = [Math]::Max($area.Left, [Math]::Min($area.Right - $form.Width, $form.Left))
     $form.Top = [Math]::Max($area.Top, [Math]::Min($area.Bottom - $form.Height, $script:tabY))
+    # An open panel must not cover the other tab: grow up from this tab instead, else open beside the tab column.
+    if ($open -and (Test-HitsOther $form.Left $form.Top $form.Width $form.Height)) {
+        $up = [Math]::Max($area.Top, $script:tabY + $tabH - $form.Height)
+        if (-not (Test-HitsOther $form.Left $up $form.Width $form.Height)) { $form.Top = $up }
+        else { $o = Get-OtherTab; $form.Left = if ($openLeft) { [Math]::Min($o.Left, $script:tabX) - $form.Width } else { [Math]::Max($o.Right, $script:tabX + $tabW) } }
+    }
     $form.Invalidate()
+    # Opening the panel fetches fresh numbers unless the last poll was under 30 s ago (the endpoint rate-limits).
+    if ($opening -and ((Get-Date) - $script:lastPoll).TotalSeconds -gt 30) { Update-Widget }
 }
 
 # Click toggles the full panel. Drag (moving more than a few px) moves the tab anywhere;
@@ -240,6 +277,7 @@ $form.Add_MouseUp({
     $area = Get-TabScreen
     if ($script:tabX - $area.Left -lt 40) { $script:tabX = $area.Left }
     elseif ($area.Right - ($script:tabX + $tabW) -lt 40) { $script:tabX = $area.Right - $tabW }
+    Clear-OtherTab $area
     Set-Expanded $false
     $script:tabX = $form.Left; $script:tabY = $form.Top
     try { Set-Content $posFile "$($script:tabX),$($script:tabY)" } catch {}
@@ -249,7 +287,9 @@ $form.Add_MouseUp({
 
 $tray = New-Object Windows.Forms.NotifyIcon -Property @{ Visible = $true; Text = 'Claude usage' }
 
+$script:lastPoll = [datetime]::MinValue
 function Update-Widget {
+    $script:lastPoll = Get-Date
     try { $script:data = Get-Limits; $script:err = $null }
     catch {
         $msg = "$_"
@@ -303,7 +343,10 @@ $script:hoverMode = try { (Get-Content $modeFile -ErrorAction Stop).Trim() -eq '
 $hover = New-Object Windows.Forms.Timer -Property @{ Interval = 150 }
 $hover.Add_Tick({
     if (-not $script:hoverMode -or -not $form.Visible -or $null -ne $script:drag) { return }
-    $inside = $form.Bounds.Contains([Windows.Forms.Cursor]::Position) -or ($menu.Visible -and $script:expanded)
+    $cur = [Windows.Forms.Cursor]::Position
+    # The tab's own spot counts too: a panel opened beside the tab column no longer covers it.
+    $inside = $form.Bounds.Contains($cur) -or ($menu.Visible -and $script:expanded) -or
+              ($script:expanded -and (New-Object Drawing.Rectangle($script:tabX, $script:tabY, $tabW, $tabH)).Contains($cur))
     if ($inside -ne $script:expanded) { Set-Expanded $inside }
 })
 $hoverItem = New-Object Windows.Forms.ToolStripMenuItem('Open panel on hover (instead of click)', $null, {

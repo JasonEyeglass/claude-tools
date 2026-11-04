@@ -30,22 +30,53 @@ function Get-ClaudeCmd { 'claude --dangerously-skip-permissions' + $(if ($resume
 # Opens and links the project's vault first, so Claude's obsidian connection is up when the session starts.
 function Connect-Vault($path, $waitSec = 20) {
     if (-not (Find-Vault $path)) { return }
-    $status.Text = 'Opening Obsidian vault...'; $form.Cursor = 'WaitCursor'; $form.Refresh()
+    $status.Text = 'Opening Obsidian vault...'; $status.Visible = $true; $form.Cursor = 'WaitCursor'; $form.Refresh()
     try { [void](Connect-ProjectVault $path $waitSec) } catch {}
-    $status.Text = ''; $form.Cursor = 'Default'
+    $status.Text = ''; $status.Visible = $false; $form.Cursor = 'Default'
 }
 
-# Opens a terminal in the project with Claude already running; falls back to plain PowerShell without Windows Terminal.
+# Other Claude Code profiles: ~/.claude-<name> folders signed in to another account (used through CLAUDE_CONFIG_DIR).
+$profiles = @(Get-ChildItem $env:USERPROFILE -Directory -Force -Filter '.claude-*' -ErrorAction SilentlyContinue |
+    Where-Object { Test-Path (Join-Path $_.FullName '.credentials.json') })
+
+# Opens a terminal in the project with Claude already running, as the account picked for Terminal;
+# falls back to plain PowerShell without Windows Terminal.
 function Open-InTerminal($name, $vaultWaitSec = 20) {
     $path = Join-Path $root $name
     Connect-Vault $path $vaultWaitSec
     $cmd  = Get-ClaudeCmd
-    if (Get-Command wt.exe -ErrorAction SilentlyContinue) {
-        Start-Process wt.exe -ArgumentList "-d `"$path`" powershell.exe -NoExit -Command $cmd"
-    } else {
-        Start-Process powershell.exe -WorkingDirectory $path -ArgumentList '-NoExit', '-Command', $cmd
-    }
+    if ($account.SelectedIndex -gt 0) { $cmd = "`$env:CLAUDE_CONFIG_DIR = '$($profiles[$account.SelectedIndex - 1].FullName)'; $cmd" }
+    Start-Shell $path $cmd
     $form.Close()
+}
+
+function Start-Shell($dir, $cmd) {
+    # Encoded so wt.exe doesn't split the command at ';' (its own tab separator).
+    $enc = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($cmd))
+    if (Get-Command wt.exe -ErrorAction SilentlyContinue) {
+        Start-Process wt.exe -ArgumentList "-d `"$dir`" powershell.exe -NoExit -EncodedCommand $enc"
+    } else {
+        Start-Process powershell.exe -WorkingDirectory $dir -ArgumentList '-NoExit', '-EncodedCommand', $enc
+    }
+}
+
+# Opens Claude in a new, empty profile ~/.claude-<name> so the user can sign in to another account there;
+# the other logins are untouched. The account joins the list once signed in (next time the launcher opens).
+function Add-Account {
+    $dlg = New-Window 'Add account' 380 170
+    $dlg.StartPosition = 'CenterParent'
+    $box = New-Field $dlg 18 50 344 'Account name, e.g. work'
+    $ok = New-Button $dlg 'Sign in' 18 104 344 $true
+    $ok.DialogResult = 'OK'; $dlg.AcceptButton = $ok
+    $dlg.Add_KeyDown({ if ($_.KeyCode -eq 'Escape') { $dlg.Close() } })
+    $dlg.Add_Shown({ $box.Focus() })
+    if ($dlg.ShowDialog($form) -ne 'OK' -or -not $box.Text.Trim()) { return }
+    $name = $box.Text.Trim()
+    if ($name -notmatch '^[A-Za-z0-9_-]+$') { [void][Windows.Forms.MessageBox]::Show('Use only letters, numbers, - and _.', 'Add account'); return }
+    $dir = "$env:USERPROFILE\.claude-$name"
+    if (Test-Path "$dir\.credentials.json") { [void][Windows.Forms.MessageBox]::Show("'$name' is already signed in.", 'Add account'); return }
+    Start-Shell $env:USERPROFILE "`$env:CLAUDE_CONFIG_DIR = '$dir'; claude"
+    [void][Windows.Forms.MessageBox]::Show("Sign in with the new account in the window that opened (type /login if no login screen shows), then type /exit.`n`nOpen Project lists '$name' the next time you open it.", 'Add account')
 }
 
 # Opens a Claude Desktop code session in the project (its own deep link). Resume picks the folder's newest chat.
@@ -227,7 +258,19 @@ $resume = New-Object Windows.Forms.CheckBox -Property @{
     Text = 'Resume last session'; Location = "18,$($H - 108)"; AutoSize = $true; ForeColor = $c.sub; FlatStyle = 'Flat'; Cursor = 'Hand'
 }
 $resume.FlatAppearance.BorderColor = $c.dim; $resume.FlatAppearance.CheckedBackColor = $c.accent
-$status = New-Object Windows.Forms.Label -Property @{ Location = "200,$($H - 106)"; Size = "$($W - 218),20"; TextAlign = 'TopRight'; ForeColor = $c.accent; Font = $fSub }
+# Status covers the key hints while a vault opens, leaving the resume row for the account picker.
+$status = New-Object Windows.Forms.Label -Property @{ Location = "18,$($H - 26)"; Size = "$($W - 36),18"; ForeColor = $c.accent; BackColor = $c.bg; Font = $fSub; Visible = $false }
+$account = New-Object Windows.Forms.ComboBox -Property @{
+    DropDownStyle = 'DropDownList'; FlatStyle = 'Flat'; Location = "$($W - 198),$($H - 110)"; Width = 180
+    BackColor = $c.field; ForeColor = $c.text; Font = $fSub; Cursor = 'Hand'
+}
+[void]$account.Items.Add('Terminal: main account')
+foreach ($p in $profiles) { [void]$account.Items.Add('Terminal: ' + $p.Name.Substring(8)) }
+[void]$account.Items.Add('+ Add account...')
+$account.SelectedIndex = 0
+# The last item is an action, not an account: run it and go back to the main account.
+$account.Add_SelectionChangeCommitted({ if ($account.SelectedIndex -eq $account.Items.Count - 1) { $account.SelectedIndex = 0; Add-Account } })
+$form.Controls.Add($account)
 $keys = New-Object Windows.Forms.Label -Property @{
     Text = 'Enter  Antigravity      Ctrl+Enter  Terminal      Shift+Enter  Desktop'; Location = "18,$($H - 26)"; AutoSize = $true; ForeColor = $c.dim; Font = $fSub
 }
