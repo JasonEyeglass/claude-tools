@@ -327,6 +327,12 @@ $desktopItem = $menu.Items.Add('Account: Claude Desktop', $null, { Set-Source 'd
 [void]$menu.Items.Add('-')
 $showItem = $menu.Items.Add('Show on screen', $null, { $form.Visible = -not $form.Visible })
 [void]$menu.Items.Add('Refresh', $null, { Update-Widget })
+# Starting Claude in the Desktop-account profile renews its login; the user types /exit once it is up.
+# Encoded so the ';' survives being passed through to PowerShell.
+[void]$menu.Items.Add('Renew Desktop login', $null, {
+    $cmd = "`$env:CLAUDE_CONFIG_DIR = '$(Split-Path $desktopCredFile)'; Write-Host 'Type /exit once Claude has started - that renews the Desktop login.'; claude"
+    Start-Process powershell.exe -ArgumentList '-NoExit', '-EncodedCommand', ([Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($cmd)))
+})
 [void]$menu.Items.Add('Exit', $null, { $tray.Visible = $false; $tray.Dispose(); [Windows.Forms.Application]::Exit() })
 $menu.Add_Opening({
     $codeItem.Checked = $script:source -eq 'code'; $desktopItem.Checked = $script:source -eq 'desktop'; $showItem.Checked = $form.Visible
