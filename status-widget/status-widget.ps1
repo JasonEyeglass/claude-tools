@@ -3,6 +3,7 @@
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing
 Add-Type -Namespace Win32 -Name Dwm -MemberDefinition @'
 [DllImport("dwmapi.dll")] public static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int value, int size);
+[DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr hwnd, IntPtr after, int x, int y, int w, int h, uint flags);
 '@
 . "$PSScriptRoot\..\project-launcher\vault-tools.ps1"
 
@@ -27,6 +28,40 @@ function Switch-Plugin($id) {
     if ($raw -notmatch $pattern) { return }
     $new = [regex]::Replace($raw, $pattern, { param($m) $m.Groups[1].Value + $(if ($m.Groups[2].Value -eq 'true') { 'false' } else { 'true' }) }, 'None', [TimeSpan]::FromSeconds(1))
     [IO.File]::WriteAllText($settingsFile, $new)
+}
+
+# Live modes the plugins' prompt hooks read: caveman per session id, ponytail per project folder (sha256 of its path).
+$claudeDir = "$env:USERPROFILE\.claude"
+$sha = [Security.Cryptography.SHA256]::Create()
+function Get-PonytailFile($cwd) { "$claudeDir\ponytail-modes\" + (-join ($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($cwd)) | ForEach-Object { $_.ToString('x2') })) }
+function Read-Flag($file) { try { (Get-Content $file -Raw -ErrorAction Stop).Trim() } catch { $null } }
+function Get-CaveFile($id) { if ($id -match '^[A-Za-z0-9_-]{1,128}$') { "$claudeDir\.caveman-sessions\$id.mode" } }
+
+function Get-SessionModes($id, $cwd) {
+    $cave = $(if ($file = Get-CaveFile $id) { Read-Flag $file })
+    if ($null -eq $cave) { $cave = Read-Flag "$claudeDir\.caveman-active" }
+    $pony = Read-Flag (Get-PonytailFile $cwd)
+    @{ cave = $(if ($cave -and $cave -ne 'off') { $cave }); pony = $(if ($pony -and $pony -ne 'off') { $pony }) }
+}
+
+# Writes the mode file the way the plugin's own command does, then copies that command: caveman reacts to the file
+# from the next prompt, but only the command (pasted in the session) swaps the rules the session started with.
+function Switch-SessionMode($kind, $id, $cwd, $on) {
+    if ($kind -eq 'Caveman') {
+        $file = Get-CaveFile $id; if (-not $file) { return }
+        New-Item -ItemType Directory -Force (Split-Path $file) | Out-Null
+        [IO.File]::WriteAllText($file, $(if ($on) { 'off' } else { 'caveman' }))
+        # Shared mirror for the statusline; caveman never stores 'off' in it.
+        if ($on) { Remove-Item "$claudeDir\.caveman-active" -ErrorAction SilentlyContinue } else { [IO.File]::WriteAllText("$claudeDir\.caveman-active", 'caveman') }
+        $cmd = if ($on) { 'stop caveman' } else { '/caveman' }
+    } else {
+        $files = (Get-PonytailFile $cwd), "$claudeDir\.ponytail-active"
+        if ($on) { Remove-Item $files -ErrorAction SilentlyContinue }
+        else { New-Item -ItemType Directory -Force (Split-Path $files[0]) | Out-Null; foreach ($p in $files) { [IO.File]::WriteAllText($p, 'full') } }
+        $cmd = if ($on) { '/ponytail off' } else { '/ponytail' }
+    }
+    Set-Clipboard $cmd
+    "$kind $(if ($on) { 'off' } else { 'on' }) - paste '$cmd' in that session"
 }
 
 # Where a session runs, from the programs above its claude.exe.
@@ -102,7 +137,7 @@ function Get-Sessions {
         }
         [pscustomobject]@{
             id = $s.sessionId; name = $s.name; cwd = $s.cwd; status = $s.status
-            where = Get-Where $s.pid $byId $s.entrypoint; conns = @($conns)
+            where = Get-Where $s.pid $byId $s.entrypoint; conns = @($conns); modes = Get-SessionModes $s.sessionId $s.cwd
         }
     }
 }
@@ -196,6 +231,21 @@ function Draw-Panel($g) {
         }
         $sid = $s.id
         Add-Hit $pad $y $inner 44 ([scriptblock]::Create("Set-Clipboard '$sid'; `$script:note = 'Session id copied'")) 'Copy session id'
+        # Per-session mode pills, right of the folder line; drawn after the card hit so their clicks win.
+        $px = $panelW - $pad - 10
+        foreach ($k in 'Ponytail', 'Caveman') {
+            $mode = if ($k -eq 'Caveman') { $s.modes.cave } else { $s.modes.pony }
+            $pw = 64
+            $px -= $pw
+            if ($g) {
+                Fill-Round $g $(if ($mode) { RGB 58 48 42 } else { $c.pill }) $px ($y + 26) $pw 17 8
+                Draw-Dot $g $(if ($mode) { $c.accent } else { $c.track }) ($px + 7) ($y + 31)
+                Draw-Text $g $k $f.small $(if ($mode) { $c.text } else { $c.dim }) ($px + 17) ($y + 28)
+            }
+            $cwdArg = "$($s.cwd)".Replace("'", "''")
+            Add-Hit $px ($y + 26) $pw 17 ([scriptblock]::Create("`$script:note = Switch-SessionMode '$k' '$sid' '$cwdArg' `$$([bool]$mode)")) "$k is $(if ($mode) { "on ($mode)" } else { 'off' }) here. Click to switch, then paste the copied command in that session."
+            $px -= 6
+        }
         $cy = $y + 46
         if (-not $s.conns.Count -and $g) { Draw-Text $g 'no connections' $f.small $c.dim ($pad + 10) $cy }
         foreach ($cn in $s.conns) {
@@ -212,8 +262,11 @@ function Draw-Panel($g) {
         }
         $y += $cardH + 8
     }
-    if ($g) { Draw-Text $g 'Click a session to copy its id. Click obsidian to open its vault.' $f.small $c.dim $pad ($y + 2) }
-    $y + 24
+    if ($g) {
+        Draw-Text $g 'Click a session to copy its id. Click obsidian to open its vault.' $f.small $c.dim $pad ($y + 2)
+        Draw-Text $g 'Click Ponytail/Caveman to switch it for that session.' $f.small $c.dim $pad ($y + 16)
+    }
+    $y + 38
 }
 
 function Draw-Tab($g) {
@@ -321,10 +374,16 @@ $form.Add_Deactivate({ if ($script:expanded -and -not $menu.Visible) { Set-Expan
 $timer = New-Object Windows.Forms.Timer -Property @{ Interval = $refreshMs }
 $timer.Add_Tick({ if (-not $script:drag) { Update-Widget } })
 
+# Other always-on-top windows (taskbar, Start, other apps) can bury a TopMost form; re-raise it without taking focus.
+# Skipped while the right-click menu is open so the form doesn't cover it.
+$raise = New-Object Windows.Forms.Timer -Property @{ Interval = 1500 }
+$raise.Add_Tick({ if (-not $menu.Visible) { [void][Win32.Dwm]::SetWindowPos($form.Handle, [IntPtr](-1), 0, 0, 0, 0, 0x13) } })
+
 $round = 2; [void][Win32.Dwm]::DwmSetWindowAttribute($form.Handle, 33, [ref]$round, 4)
 $border = 0x00302E2C; [void][Win32.Dwm]::DwmSetWindowAttribute($form.Handle, 34, [ref]$border, 4)
 
 Update-Widget
 $form.Show()
 $timer.Start()
+$raise.Start()
 [Windows.Forms.Application]::Run()
