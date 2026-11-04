@@ -57,7 +57,23 @@ function Test-VaultOnline($mcp, $timeoutSec = 2) {
     } catch { $null }
 }
 
+# obsidian://open?path= ignores folders Obsidian doesn't know, so new vaults are added to its vault list first.
 function Open-Vault($vaultPath) {
+    $cfgFile = "$env:APPDATA\obsidian\obsidian.json"
+    $cfg = Get-Content $cfgFile -Raw | ConvertFrom-Json
+    if ($cfg.vaults.PSObject.Properties.Value.path -notcontains $vaultPath) {
+        $id = -join ((1..16) | ForEach-Object { '{0:x}' -f (Get-Random -Maximum 16) })
+        $ts = [DateTimeOffset]::Now.ToUnixTimeMilliseconds()
+        $cfg.vaults | Add-Member -NotePropertyName $id -NotePropertyValue ([pscustomobject]@{ path = $vaultPath; ts = $ts })
+        [IO.File]::WriteAllText($cfgFile, ($cfg | ConvertTo-Json -Depth 10 -Compress))
+        # A running Obsidian only reads its vault list at startup; it saves notes as you type, so a restart is safe.
+        $running = Get-Process Obsidian -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($running) {
+            $exe = $running.Path
+            Stop-Process -Name Obsidian; Start-Sleep 3
+            Start-Process $exe; Start-Sleep 6
+        }
+    }
     Start-Process "obsidian://open?path=$([uri]::EscapeDataString($vaultPath))"
 }
 
@@ -94,7 +110,13 @@ function New-ProjectVault($projectPath, $name) {
 # Opens the project's vault and links it; waits briefly for a fresh vault's plugin to come up. Returns the vault or $null.
 function Connect-ProjectVault($projectPath, $waitSec = 20) {
     $vault = Find-Vault $projectPath
-    if (-not $vault) { return }
+    if (-not $vault) {
+        # Projects made outside the launcher get a <Name>\<Name> vault too, kept out of git locally.
+        $name = Split-Path $projectPath -Leaf
+        $vault = New-ProjectVault $projectPath $name
+        $exclude = Join-Path $projectPath '.git\info\exclude'
+        if (Test-Path (Split-Path $exclude)) { Add-Content $exclude "`n/$name/" }
+    }
     $mcp = Get-VaultMcp $vault
     if (-not ($mcp -and (Test-VaultOnline $mcp 1))) { Open-Vault $vault }
     $deadline = (Get-Date).AddSeconds($waitSec)

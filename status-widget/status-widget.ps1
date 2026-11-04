@@ -4,7 +4,7 @@ Add-Type -AssemblyName System.Windows.Forms, System.Drawing
 Add-Type -Namespace Win32 -Name Dwm -MemberDefinition @'
 [DllImport("dwmapi.dll")] public static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int value, int size);
 '@
-. "$env:USERPROFILE\Documents\Practice\project-launcher\vault-tools.ps1"
+. "$PSScriptRoot\..\project-launcher\vault-tools.ps1"
 
 $settingsFile = "$env:USERPROFILE\.claude\settings.json"
 $posFile      = Join-Path $PSScriptRoot 'position.txt'
