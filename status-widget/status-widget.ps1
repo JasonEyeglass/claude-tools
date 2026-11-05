@@ -198,7 +198,7 @@ function Draw-Panel($g) {
         $w = 100
         if ($g) {
             Fill-Round $g $(if ($on) { RGB 58 48 42 } else { $c.pill }) $x $y $w 26 13
-            Draw-Dot $g $(if ($on) { $c.accent } else { $c.track }) ($x + 10) ($y + 10)
+            Draw-Dot $g $(if ($on) { $c.green } else { $c.track }) ($x + 10) ($y + 10)
             Draw-Text $g $label $f.bold $(if ($on) { $c.text } else { $c.sub }) ($x + 22) ($y + 5)
         }
         $id = $plugins[$k]; Add-Hit $x $y $w 26 ([scriptblock]::Create("Switch-Plugin '$id'; `$script:note = 'Saved - applies to new sessions'")) "Turn $k on/off"
