@@ -104,7 +104,47 @@ function New-ProjectVault($projectPath, $name) {
             Where-Object { $_.Name -ne 'data.json' -and $_.Extension -ne '.log' } | Copy-Item -Destination $dest
         [IO.File]::WriteAllText((Join-Path $vault '.obsidian\community-plugins.json'), "[`n  `"$script:pluginId`"`n]")
     }
+    Update-VaultLayout $vault
     $vault
+}
+
+# Gives a vault the folders, starter notes and folder colours in vault-template\. Never overwrites a note; the colour
+# snippet is always refreshed; the template's .obsidian settings are merged in. Rob keeps its own "Project Memory" layout.
+function Update-VaultLayout($vault) {
+    if (Test-Path -LiteralPath (Join-Path $vault 'Project Memory')) { return }
+    $tpl = Join-Path $PSScriptRoot 'vault-template'
+    $name = Split-Path $vault -Leaf
+    foreach ($f in Get-ChildItem -LiteralPath $tpl -Recurse -Force) {
+        $dest = Join-Path $vault $f.FullName.Substring($tpl.Length + 1)
+        if ($f.PSIsContainer) { New-Item -ItemType Directory -Force -Path $dest | Out-Null }
+        elseif ($f.Name -eq '.gitkeep') { }
+        elseif ($f.Extension -eq '.css') { Copy-Item -LiteralPath $f.FullName -Destination $dest -Force }
+        elseif (-not (Test-Path -LiteralPath $dest)) {
+            if ($f.Extension -eq '.md') { [IO.File]::WriteAllText($dest, [IO.File]::ReadAllText($f.FullName).Replace('{{project}}', $name)) }
+            else { Copy-Item -LiteralPath $f.FullName -Destination $dest }
+        }
+        elseif ($f.Extension -eq '.json') { Merge-ObsidianJson $f.FullName $dest }
+    }
+}
+
+# Adds the template's settings a vault lacks. Lists (enabled snippets, graph colour groups) gain the missing entries;
+# graph groups match by query, so a colour the user changed in Obsidian stays.
+function Merge-ObsidianJson($tplFile, $destFile) {
+    $t = [IO.File]::ReadAllText($tplFile) | ConvertFrom-Json
+    $d = try { [IO.File]::ReadAllText($destFile) | ConvertFrom-Json } catch { return }
+    if (-not $d) { return }
+    $key = { if ($_.query) { $_.query } else { $_ | ConvertTo-Json -Compress -Depth 5 } }
+    $changed = $false
+    foreach ($p in $t.PSObject.Properties) {
+        $cur = $d.PSObject.Properties[$p.Name]
+        if (-not $cur) { $d | Add-Member -NotePropertyName $p.Name -NotePropertyValue $p.Value; $changed = $true }
+        elseif ($p.Value -is [array]) {
+            $have = @($cur.Value | ForEach-Object $key)
+            $add = @($p.Value | Where-Object { (& $key) -notin $have })
+            if ($add.Count) { $cur.Value = @($cur.Value) + $add; $changed = $true }
+        }
+    }
+    if ($changed) { [IO.File]::WriteAllText($destFile, ($d | ConvertTo-Json -Depth 10)) }
 }
 
 # Opens the project's vault and links it; waits briefly for a fresh vault's plugin to come up. Returns the vault or $null.
@@ -117,6 +157,7 @@ function Connect-ProjectVault($projectPath, $waitSec = 20) {
         $exclude = Join-Path $projectPath '.git\info\exclude'
         if (Test-Path (Split-Path $exclude)) { Add-Content $exclude "`n/$name/" }
     }
+    try { Update-VaultLayout $vault } catch {}
     $mcp = Get-VaultMcp $vault
     if (-not ($mcp -and (Test-VaultOnline $mcp 1))) { Open-Vault $vault }
     $deadline = (Get-Date).AddSeconds($waitSec)

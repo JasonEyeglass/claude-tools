@@ -1,0 +1,11 @@
+{
+  "colorGroups": [
+    { "query": "path:\"1 🧭 Project\"", "color": { "a": 1, "rgb": 4886754 } },
+    { "query": "path:\"2 📅 Sessions\"", "color": { "a": 1, "rgb": 9345711 } },
+    { "query": "path:\"3 ✅ Tracking\"", "color": { "a": 1, "rgb": 16098851 } },
+    { "query": "path:\"4 📐 Design\"", "color": { "a": 1, "rgb": 10181046 } },
+    { "query": "path:\"🖼️ Attachments\"", "color": { "a": 1, "rgb": 15105695 } },
+    { "query": "path:\"📄 Templates\"", "color": { "a": 1, "rgb": 8359053 } },
+    { "query": "path:\"Claude Memory\"", "color": { "a": 1, "rgb": 3066993 } }
+  ]
+}

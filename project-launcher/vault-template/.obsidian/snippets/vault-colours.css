@@ -1,0 +1,23 @@
+/* Project vault folder colours (from the launcher's vault-template; rewritten on every launcher open) */
+
+.nav-folder-title[data-path^="1 🧭 Project"]   { --vc: #4a90e2; }
+.nav-folder-title[data-path^="2 📅 Sessions"]  { --vc: #8e9aaf; }
+.nav-folder-title[data-path^="3 ✅ Tracking"]  { --vc: #f5a623; }
+.nav-folder-title[data-path^="4 📐 Design"]    { --vc: #9b59b6; }
+.nav-folder-title[data-path^="🖼️ Attachments"] { --vc: #e67e9f; }
+.nav-folder-title[data-path^="📄 Templates"]   { --vc: #7f8c8d; }
+.nav-folder-title[data-path^="Claude Memory"]  { --vc: #2ecc71; }
+
+.nav-folder-title[data-path^="1 🧭 Project"], .nav-folder-title[data-path^="2 📅 Sessions"],
+.nav-folder-title[data-path^="3 ✅ Tracking"], .nav-folder-title[data-path^="4 📐 Design"],
+.nav-folder-title[data-path^="🖼️ Attachments"], .nav-folder-title[data-path^="📄 Templates"],
+.nav-folder-title[data-path^="Claude Memory"] {
+  color: var(--vc);
+  border-left: 3px solid var(--vc);
+  border-radius: 4px;
+  font-weight: 600;
+}
+.nav-folder-title[data-path^="1 🧭 Project"]:hover, .nav-folder-title[data-path^="2 📅 Sessions"]:hover,
+.nav-folder-title[data-path^="3 ✅ Tracking"]:hover, .nav-folder-title[data-path^="4 📐 Design"]:hover,
+.nav-folder-title[data-path^="🖼️ Attachments"]:hover, .nav-folder-title[data-path^="📄 Templates"]:hover,
+.nav-folder-title[data-path^="Claude Memory"]:hover { background: color-mix(in srgb, var(--vc) 18%, transparent); }
