@@ -4,6 +4,7 @@ Add-Type -AssemblyName System.Windows.Forms, System.Drawing
 Add-Type -Namespace Win32 -Name User32 -MemberDefinition @'
 [DllImport("dwmapi.dll")] public static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int value, int size);
 [DllImport("user32.dll")] public static extern bool DestroyIcon(IntPtr h);
+[DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr hwnd, IntPtr after, int x, int y, int w, int h, uint flags);
 '@
 
 $credFile   = "$env:USERPROFILE\.claude\.credentials.json"
@@ -365,11 +366,15 @@ $menu.Add_Opening({ $hoverItem.Checked = $script:hoverMode })
 $poll = New-Object Windows.Forms.Timer -Property @{ Interval = $pollMs }
 $poll.Add_Tick({ Update-Widget })
 
+# Other always-on-top windows (taskbar, Start, other apps) can bury a TopMost form; re-raise it without taking focus.
+$raise = New-Object Windows.Forms.Timer -Property @{ Interval = 1500 }
+$raise.Add_Tick({ if ($form.Visible -and -not $menu.Visible) { [void][Win32.User32]::SetWindowPos($form.Handle, [IntPtr](-1), 0, 0, 0, 0, 0x13) } })
+
 # Windows 11 rounded corners and a subtle border (ignored on Windows 10).
 $round = 2; [void][Win32.User32]::DwmSetWindowAttribute($form.Handle, 33, [ref]$round, 4)
 $border = 0x00302E2C; [void][Win32.User32]::DwmSetWindowAttribute($form.Handle, 34, [ref]$border, 4)
 
 Update-Widget
 $form.Show()
-$hover.Start(); $poll.Start()
+$hover.Start(); $poll.Start(); $raise.Start()
 [Windows.Forms.Application]::Run()
