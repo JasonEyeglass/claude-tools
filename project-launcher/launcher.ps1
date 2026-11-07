@@ -3,6 +3,13 @@
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing
 . (Join-Path $PSScriptRoot 'vault-tools.ps1')
 
+# Start the Usage and Status widgets through their desktop shortcuts if they aren't already running.
+$running = (Get-CimInstance Win32_Process -Filter "Name='powershell.exe'").CommandLine -join "`n"
+foreach ($w in @{ 'usage-widget.ps1' = 'Claude Usage'; 'status-widget.ps1' = 'Claude Status' }.GetEnumerator()) {
+    $lnk = Join-Path ([Environment]::GetFolderPath('Desktop')) "$($w.Value).lnk"
+    if ($running -notlike "*$($w.Key)*" -and (Test-Path $lnk)) { Start-Process $lnk }
+}
+
 $root = [Environment]::GetFolderPath('MyDocuments')
 $ide  = "$env:LOCALAPPDATA\Programs\Antigravity IDE\Antigravity IDE.exe"
 
